@@ -1,0 +1,163 @@
+# Build -> push -> migrate -> deploy for the PaySplit backend.
+#
+# Migrations run as the Cloud Run Job ${_SERVICE_NAME}-migrate before the
+# service is touched, so new code never serves against an old schema. A failed
+# migration fails the build and the running revision is left as it was.
+#
+# Seeders are deliberately NOT run here. They are untracked (seederStorage is
+# unset), so they would re-run on every build, and the roles seeder is not
+# idempotent. Seed once by hand (see the deployment notes in README).
+#
+# The Deploy step uses `services update`, which only changes the image of an
+# EXISTING service. Create the service by hand with `gcloud run deploy` first;
+# env vars, secrets, service account and Cloud SQL wiring set there are kept.
+#
+# Migrations are opt-in: the Migrate step is skipped unless the trigger sets
+# _RUN_MIGRATIONS=true. While it is off, run migrations by hand
+# (npm run migration:run against the target database) and the DB
+# substitutions below can be left empty.
+#
+# Substitutions set on the trigger:
+#   _RUN_MIGRATIONS      "true" to run the Migrate step; anything else skips it
+#   _AR_HOSTNAME, _AR_PROJECT_ID, _AR_REPOSITORY  Artifact Registry location
+#                        e.g. europe-west1-docker.pkg.dev, talent-nation-marketplace, paysplit
+#   _DEPLOY_REGION, _SERVICE_NAME, _TRIGGER_ID    Cloud Run target
+#   _RUN_SERVICE_ACCOUNT Service account the migrate job runs as (same one as
+#                        the service), e.g.
+#                        paysplit-be-dev-run@talent-nation-marketplace.iam.gserviceaccount.com
+#   _CLOUDSQL_INSTANCE   Cloud SQL connection name, reached over the unix
+#                        socket, e.g. talent-nation-marketplace:europe-west1:paysplit-dev-db
+#   _DB_HOST             TCP host, used only when _CLOUDSQL_INSTANCE is empty
+#                        (e.g. Neon)
+#   _DB_SSL              "true" for TLS databases (Neon); "false" for the
+#                        Cloud SQL socket
+#   _DB_NAME, _DB_USERNAME
+#   _DB_PASSWORD_SECRET  Secret Manager secret name holding the DB password
+# There are no defaults for the DB values on purpose: with migrations on, a
+# trigger missing them fails the build instead of migrating some other
+# environment's database.
+
+steps:
+  - id: Build
+    name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - -t
+      - $_AR_HOSTNAME/$_AR_PROJECT_ID/$_AR_REPOSITORY/$_SERVICE_NAME:$COMMIT_SHA
+      - -f
+      - Dockerfile
+      - .
+
+  # Same daemon as Build, so the builder stage comes from the layer cache.
+  - id: Build migrator
+    name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - --target
+      - migrator
+      - -t
+      - $_AR_HOSTNAME/$_AR_PROJECT_ID/$_AR_REPOSITORY/$_SERVICE_NAME-migrate:$COMMIT_SHA
+      - -f
+      - Dockerfile
+      - .
+
+  - id: Push
+    name: gcr.io/cloud-builders/docker
+    args:
+      - push
+      - $_AR_HOSTNAME/$_AR_PROJECT_ID/$_AR_REPOSITORY/$_SERVICE_NAME:$COMMIT_SHA
+
+  - id: Push migrator
+    name: gcr.io/cloud-builders/docker
+    args:
+      - push
+      - $_AR_HOSTNAME/$_AR_PROJECT_ID/$_AR_REPOSITORY/$_SERVICE_NAME-migrate:$COMMIT_SHA
+
+  - id: Migrate
+    name: gcr.io/google.com/cloudsdktool/cloud-sdk:slim
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        set -euo pipefail
+
+        if [ "${_RUN_MIGRATIONS}" != "true" ]; then
+          echo "_RUN_MIGRATIONS is not \"true\"; skipping migrations."
+          exit 0
+        fi
+
+        if [ -z "${_DB_NAME}" ] || [ -z "${_DB_USERNAME}" ] || [ -z "${_DB_PASSWORD_SECRET}" ] || [ -z "${_RUN_SERVICE_ACCOUNT}" ]; then
+          echo "Missing DB or service-account substitutions on the trigger; refusing to migrate." >&2
+          exit 1
+        fi
+
+        # $$ is a literal $ for bash; single $ is a Cloud Build substitution.
+        extra_flags=()
+        if [ -n "${_CLOUDSQL_INSTANCE}" ]; then
+          db_host="/cloudsql/${_CLOUDSQL_INSTANCE}"
+          extra_flags+=(--set-cloudsql-instances=${_CLOUDSQL_INSTANCE})
+        elif [ -n "${_DB_HOST}" ]; then
+          db_host="${_DB_HOST}"
+        else
+          echo "Set _CLOUDSQL_INSTANCE or _DB_HOST on the trigger; refusing to migrate." >&2
+          exit 1
+        fi
+
+        db_ssl="${_DB_SSL}"
+        if [ -z "$${db_ssl}" ]; then
+          db_ssl=false
+        fi
+
+        # deploy is create-or-update. --command/--args are always set so the
+        # job can only ever run db:migrate, never a seeder.
+        gcloud run jobs deploy ${_SERVICE_NAME}-migrate \
+          --image=$_AR_HOSTNAME/$_AR_PROJECT_ID/$_AR_REPOSITORY/$_SERVICE_NAME-migrate:$COMMIT_SHA \
+          --region=${_DEPLOY_REGION} \
+          --service-account=${_RUN_SERVICE_ACCOUNT} \
+          "$${extra_flags[@]}" \
+          --set-env-vars=NODE_ENV=production,DB_HOST=$${db_host},DB_SSL=$${db_ssl},DB_NAME=${_DB_NAME},DB_USERNAME=${_DB_USERNAME} \
+          --set-secrets=DB_PASSWORD=${_DB_PASSWORD_SECRET}:latest \
+          --command=node \
+          --args=node_modules/sequelize-cli/lib/sequelize,db:migrate \
+          --max-retries=0 \
+          --task-timeout=600s \
+          --labels=managed-by=gcp-cloud-build,commit-sha=$COMMIT_SHA,gcb-build-id=$BUILD_ID \
+          --quiet
+
+        # --wait returns non-zero when the task fails, which stops the build
+        # before Deploy.
+        gcloud run jobs execute ${_SERVICE_NAME}-migrate \
+          --region=${_DEPLOY_REGION} \
+          --wait
+
+  # Only the image changes; env, secrets and Cloud SQL wiring stay as set on
+  # the service.
+  - id: Deploy
+    name: gcr.io/google.com/cloudsdktool/cloud-sdk:slim
+    entrypoint: gcloud
+    args:
+      - run
+      - services
+      - update
+      - $_SERVICE_NAME
+      - --platform=managed
+      - --image=$_AR_HOSTNAME/$_AR_PROJECT_ID/$_AR_REPOSITORY/$_SERVICE_NAME:$COMMIT_SHA
+      - --labels=managed-by=gcp-cloud-build-deploy-cloud-run,commit-sha=$COMMIT_SHA,gcb-build-id=$BUILD_ID,gcb-trigger-id=$_TRIGGER_ID
+      - --region=$_DEPLOY_REGION
+      - --quiet
+
+images:
+  - $_AR_HOSTNAME/$_AR_PROJECT_ID/$_AR_REPOSITORY/$_SERVICE_NAME:$COMMIT_SHA
+  - $_AR_HOSTNAME/$_AR_PROJECT_ID/$_AR_REPOSITORY/$_SERVICE_NAME-migrate:$COMMIT_SHA
+
+tags:
+  - gcp-cloud-build-deploy-cloud-run
+  - gcp-cloud-build-deploy-cloud-run-managed
+  - $_SERVICE_NAME
+
+timeout: 1800s
+
+options:
+  # Required when the build runs as a user-specified service account.
+  logging: CLOUD_LOGGING_ONLY
+  substitutionOption: ALLOW_LOOSE

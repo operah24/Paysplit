@@ -1,0 +1,29 @@
+# Rebuilt inside the image
+node_modules
+dist
+coverage
+
+# Never ship secrets or credentials
+.env
+.env.*
+!.env.example
+*-key.json
+*-local-dev.json
+gcp-*.json
+*service-account*.json
+*.pem
+
+# Not needed in the image
+.git
+.github
+.husky
+.vscode
+.idea
+test
+*.log
+npm-debug.log*
+Dockerfile
+.dockerignore
+cloudbuild.yaml
+ecosystem.config.js
+README.md
