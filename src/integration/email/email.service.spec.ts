@@ -5,9 +5,9 @@ import { EmailService, htmlToText } from './email.service';
 jest.mock('nodemailer', () => ({ createTransport: jest.fn() }));
 
 const smtpConfig: Record<string, unknown> = {
-  'smtp.host': 'smtp.zeptomail.com',
-  'smtp.port': 587,
-  'smtp.user': 'emailapikey',
+  'smtp.host': 'sandbox.smtp.mailtrap.io',
+  'smtp.port': 2525,
+  'smtp.user': 'mailtrap-user',
   'smtp.pass': 'secret',
   'smtp.from': 'noreply@talentnation.ai',
   'email.fromName': 'PaySplit | Salary Autopilot',
@@ -33,15 +33,15 @@ describe('EmailService', () => {
     });
   });
 
-  it('configures STARTTLS on port 587', () => {
+  it('configures STARTTLS for the Mailtrap sandbox', () => {
     makeService();
     expect(createTransport).toHaveBeenCalledWith(
       expect.objectContaining({
-        host: 'smtp.zeptomail.com',
-        port: 587,
+        host: 'sandbox.smtp.mailtrap.io',
+        port: 2525,
         secure: false,
         requireTLS: true,
-        auth: { user: 'emailapikey', pass: 'secret' },
+        auth: { user: 'mailtrap-user', pass: 'secret' },
       }),
     );
   });

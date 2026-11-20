@@ -16,11 +16,41 @@ This repository contains the NestJS backend API.
 - **Language**: TypeScript
 - **ORM**: [Sequelize](https://sequelize.org/) (PostgreSQL) via `sequelize-typescript`
 - **Logging**: Winston + [BetterStack](https://betterstack.com/) (optional)
-- **Email**: SMTP via Nodemailer (ZeptoMail) with EJS templates (console mock mode when SMTP is not configured)
+- **Email**: SMTP via Nodemailer (Mailtrap) with EJS templates (console mock mode when SMTP is not configured)
 - **Payments**: [HePaid](https://hepaid-docs.tobee.dev/api-reference/introduction) (bank list, name enquiry, salary accounts, transfers)
 - **KYC**: Dojah
 - **Validation**: Joi (environment) and class-validator (DTOs)
 - **Docs**: Swagger / OpenAPI
+
+### External providers
+
+#### Email delivery — Mailtrap
+
+PaySplit sends verification, password-reset and notification emails through Mailtrap's SMTP service using Nodemailer. Mailtrap is currently used as the development/testing email provider.
+
+```env
+SMTP_HOST=sandbox.smtp.mailtrap.io
+SMTP_PORT=2525
+SMTP_USER=your_mailtrap_username
+SMTP_PASS=your_mailtrap_password
+SMTP_FROM=your_sender@example.com
+EMAIL_FROM_NAME=PaySplit | Salary Autopilot
+```
+
+The Mailtrap credentials are available in the Mailtrap inbox settings. If the SMTP variables are empty, the application uses console mock mode for local development.
+
+#### Image uploads — Cloudinary
+
+Profile images are uploaded server-side to Cloudinary. The API returns the Cloudinary URL, while the Cloudinary API secret remains on the server.
+
+```env
+CLOUDINARY_CLOUD_NAME=your_cloud_name
+CLOUDINARY_API_KEY=your_api_key
+CLOUDINARY_API_SECRET=your_api_secret
+CLOUDINARY_FOLDER=paysplit
+```
+
+The upload endpoint is `PUT /api/v1/users/me/profile-image` with a multipart field named `image`. PNG, JPG and WebP files up to 5MB are supported. Replacing or deleting a profile image also removes the old Cloudinary asset.
 
 ## Project Structure
 ```text
