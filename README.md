@@ -284,7 +284,10 @@ npm run build        # production build
 npm run start:prod
 ```
 
-Swagger docs: `http://localhost:3000/docs`
+Swagger docs:
+
+- Local: `http://localhost:3000/docs`
+- Hosted: [https://paysplit-ipce.onrender.com/docs](https://paysplit-ipce.onrender.com/docs)
 
 ## Testing
 ```bash
